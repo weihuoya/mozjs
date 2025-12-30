@@ -24,97 +24,13 @@ env:
   SCCACHE_GHA_VERSION: 2
 
 jobs:
-  mac:
-    strategy:
-      fail-fast: false
-      matrix:
-        features: ["debugmozjs", '""']
-        platform:
-          - { target: aarch64-apple-darwin, os: macos-14 }
-          - { target: x86_64-apple-darwin, os: macos-15-intel }
-    runs-on: ${{ matrix.platform.os }}
-    env:
-      RUSTC_WRAPPER: sccache
-      CCACHE: sccache
-      SCCACHE_GHA_ENABLED: "true"
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v6
-        with:
-          python-version: "3.13"
-      - name: Install deps
-        run: |
-          brew install llvm yasm
-      - uses: dtolnay/rust-toolchain@master
-        id: toolchain
-        with:
-          toolchain: ${{ inputs.rust_version }}
-          components: "rustfmt"
-      - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Build
-        run: |
-          cargo +${{ steps.toolchain.outputs.name }} build --verbose --features ${{ matrix.features }}
-          cargo +${{ steps.toolchain.outputs.name }} test --tests --examples --verbose --features ${{ matrix.features }}
-      - name: Upload artifact
-        if: ${{ matrix.features != 'debugmozjs' && env.NEW_RUST_CHECK == 'false' }}
-        uses: actions/upload-artifact@v4
-        with:
-          path: ./target/libmozjs-${{ matrix.platform.target }}.tar.gz
-          name: libmozjs-${{ matrix.platform.target }}.tar.gz
-
-  linux:
-    env:
-      RUSTC_WRAPPER: "sccache"
-      CCACHE: sccache
-      SCCACHE_GHA_ENABLED: "true"
-    runs-on: ubuntu-22.04 # Needed for artifacts to work on older systems (due to glibc)
-    strategy:
-      fail-fast: false
-      matrix:
-        features: ["debugmozjs", '""']
-    steps:
-      - uses: actions/checkout@v4
-      - uses: dtolnay/rust-toolchain@master
-        id: toolchain
-        with:
-          toolchain: ${{ inputs.rust_version }}
-          components: "rustfmt"
-      - run: sudo apt update && sudo apt install -y llvm
-        # needed to work around bindgen bug. The version here should match the default clang version on ubuntu-22.04
-      - name: Set LIBCLANG_PATH env
-        run: echo "LIBCLANG_PATH=/usr/lib/llvm-14/lib" >> $GITHUB_ENV
-      - name: Run sccache-cache
-        uses: mozilla-actions/sccache-action@v0.0.9
-      - name: Build
-        # doc tests on mozjs_sys fail because they include stuff from SpiderMonkey
-        run: |
-          cargo +${{ steps.toolchain.outputs.name }} build --verbose --features ${{ matrix.features }}
-          cargo +${{ steps.toolchain.outputs.name }} test --tests --examples --verbose --features ${{ matrix.features }}
-          cargo +${{ steps.toolchain.outputs.name }} test --doc -p mozjs --verbose --features ${{ matrix.features }}
-      - name: Check wrappers integrity
-        # we generate wrappers only without debugmozjs
-        if: ${{ matrix.features != 'debugmozjs' }}
-        run: |
-          python3 ./mozjs/src/dl_and_gen_noGC.py
-          python3 ./mozjs/src/generate_wrappers.py
-          git add --all .
-          git diff --staged --no-ext-diff --exit-code
-
-      - name: Upload artifact
-        if: ${{ matrix.features != 'debugmozjs'  && env.NEW_RUST_CHECK == 'false' }}
-        uses: actions/upload-artifact@v4
-        with:
-          path: ./target/libmozjs-x86_64-unknown-linux-gnu.tar.gz
-          name: libmozjs-x86_64-unknown-linux-gnu.tar.gz
-
   windows:
     runs-on: windows-latest
     strategy:
       fail-fast: false
       matrix:
-        features: ["debugmozjs", '""']
-        target: ["x86_64-pc-windows-msvc", "aarch64-pc-windows-msvc"]
+        features: ["jit libz-sys intl"]
+        target: ["x86_64-pc-windows-msvc"]
     env:
       LINKER: "lld-link.exe"
       CC: "clang-cl"
@@ -148,156 +64,19 @@ jobs:
       - name: Build Windows
         shell: cmd
         run: |
-          cargo +${{ steps.toolchain.outputs.name }} build --verbose --target ${{ matrix.target }} --features ${{ matrix.features }}
+          cargo +${{ steps.toolchain.outputs.name }} build --release --verbose --target ${{ matrix.target }} --features "${{ matrix.features }}"
       - name: Test Windows
         if: ${{ !contains(matrix.target, 'aarch64') }}
         shell: cmd
         run: |
-          cargo +${{ steps.toolchain.outputs.name }} test --tests --examples --verbose --target ${{ matrix.target }} --features ${{ matrix.features }}
+          cargo +${{ steps.toolchain.outputs.name }} test --tests --examples --verbose --target ${{ matrix.target }} --features "${{ matrix.features }}"
 
       - name: Upload artifact
-        if: ${{ !contains(matrix.target, 'aarch64') && matrix.features != 'debugmozjs' && env.NEW_RUST_CHECK == 'false' }}
+        if: ${{ env.NEW_RUST_CHECK == 'false' }}
         uses: actions/upload-artifact@v4
         with:
           path: ./target/${{ matrix.target }}/libmozjs-x86_64-pc-windows-msvc.tar.gz
           name: libmozjs-x86_64-pc-windows-msvc.tar.gz
-
-  android:
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          [
-            "armv7-linux-androideabi",
-            "aarch64-linux-android",
-            "x86_64-linux-android",
-          ]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install NDK
-        uses: nttld/setup-ndk@v1
-        id: setup-ndk
-        with:
-          ndk-version: r28b
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        id: toolchain
-        with:
-          toolchain: ${{ inputs.rust_version }}
-          targets: ${{ matrix.target }}
-          components: "rustfmt"
-      - name: Build
-        env:
-          ANDROID_NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: |
-          ./android-build cargo +${{ steps.toolchain.outputs.name }} build --target="${{ matrix.target }}"
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        if: ${{ env.NEW_RUST_CHECK == 'false' }}
-        with:
-          path: ./target/libmozjs-${{ matrix.target }}.tar.gz
-          name: libmozjs-${{ matrix.target }}.tar.gz
-
-  ohos:
-    name: "OpenHarmony"
-    runs-on: ubuntu-latest
-    strategy:
-      matrix:
-        target: ["aarch64-unknown-linux-ohos", "x86_64-unknown-linux-ohos"]
-        features: [ "", "--features debugmozjs"]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Setup OpenHarmony SDK
-        id: setup_sdk
-        uses: openharmony-rs/setup-ohos-sdk@v0.2
-        with:
-          version: "5.0.2"
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        id: toolchain
-        with:
-          toolchain: ${{ inputs.rust_version }}
-          targets: ${{ matrix.target }}
-          components: "rustfmt"
-      - name: Build (arch ${{ matrix.target }} )
-        env:
-          OHOS_SDK_NATIVE: ${{ steps.setup_sdk.outputs.ohos_sdk_native }}
-        run: |
-          ./ohos-build cargo +${{ steps.toolchain.outputs.name }} build --target="${{ matrix.target }}" ${{ matrix.features }}
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        if: ${{ env.NEW_RUST_CHECK == 'false' && matrix.features == '' }}
-        with:
-          path: ./target/libmozjs-${{ matrix.target }}.tar.gz
-          name: libmozjs-${{ matrix.target }}.tar.gz
-      - name: Test linking (build unit-tests)
-        run: ./ohos-build cargo +${{ steps.toolchain.outputs.name }} build --target="${{ matrix.target }}" ${{ matrix.features }} --tests
-
-  wasi:
-    name: wasm32-${{ matrix.target }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - wasip1
-          - wasip2
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        id: toolchain
-        with:
-          toolchain: "1.85.0"
-          targets: "wasm32-${{ matrix.target }}"
-          components: "rustfmt"
-      - uses: bytecodealliance/actions/wasmtime/setup@v1
-      - name: Install WASI-SDK
-        run: |
-          cd /tmp
-          curl --retry 5 --retry-all-errors -OL https://github.com/WebAssembly/wasi-sdk/releases/download/wasi-sdk-25/wasi-sdk-25.0-x86_64-linux.tar.gz
-          tar -xzf wasi-sdk-25.0-x86_64-linux.tar.gz
-          mv wasi-sdk-25.0-x86_64-linux wasi-sdk
-      - name: Build
-        run: |
-          cargo +${{ steps.toolchain.outputs.name }} build --target=wasm32-${{ matrix.target }}
-        env:
-          WASI_SDK_PATH: "/tmp/wasi-sdk"
-      - name: Test
-        run: |
-          export CARGO_TARGET_WASM32_WASIP1_RUNNER="wasmtime run --dir=$PWD::/cwd"
-          export CARGO_TARGET_WASM32_WASIP2_RUNNER="wasmtime run --dir=$PWD::/cwd"
-          cargo +${{ steps.toolchain.outputs.name }} test --tests --examples --target=wasm32-${{ matrix.target }}
-        env:
-          WASI_SDK_PATH: "/tmp/wasi-sdk"
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        if: ${{ env.NEW_RUST_CHECK == 'false' }}
-        with:
-          path: ./target/libmozjs-wasm32-${{ matrix.target }}.tar.gz
-          name: libmozjs-wasm32-${{ matrix.target }}.tar.gz
-
-  linux-cross-compile:
-    name: linux (${{ matrix.target }})
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        target:
-          - aarch64-unknown-linux-gnu
-          - armv7-unknown-linux-gnueabihf
-    container: ghcr.io/servo/cross-${{ matrix.target }}:main
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@master
-        id: toolchain
-        with:
-          toolchain: ${{ inputs.rust_version }}
-          targets: ${{ matrix.target }}
-          components: "rustfmt"
-      - run: cargo +${{ steps.toolchain.outputs.name }} test --tests --examples --target ${{ matrix.target }}
 
   integrity:
     runs-on: ubuntu-latest
@@ -372,7 +151,7 @@ jobs:
 
   verify-release-artifacts:
     name: Verify release artifacts
-    needs: ["android", "linux", "mac", "ohos", "windows"]
+    needs: ["windows"]
     if: ${{  inputs.verify_artifacts && !contains(needs.*.result, 'failure') && !contains(needs.*.result, 'cancelled') }}
     uses: ./.github/workflows/release-check.yml
     with:
@@ -384,11 +163,6 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       [
-        "android",
-        "linux",
-        "linux-cross-compile",
-        "mac",
-        "ohos",
         "windows",
         "integrity",
         "verify-release-artifacts",
