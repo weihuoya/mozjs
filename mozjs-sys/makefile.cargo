@@ -7,8 +7,7 @@ CONFIGURE_FLAGS := \
 	--disable-jemalloc \
 	--disable-js-shell \
 	--disable-tests \
-	--disable-export-js \
-	--disable-shared-js \
+	--enable-shared-js \
 	--build-backends=RecursiveMake
 
 ifeq (,$(CARGO_FEATURE_JIT))
